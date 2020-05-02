@@ -2,9 +2,16 @@ package iterativeworks.mill.webpack
 
 import upickle.default._
 
-case class NodeDep(name: String, version: String)
+case class NodeDep(name: String, version: String, typed: Boolean = false)
 
-object NodeDep
+object NodeDep {
+  def parse(s: String, typed: Boolean): NodeDep = {
+    s.split(":") match {
+      case Array(name, version) => NodeDep(name, version, typed)
+      case _                    => throw new Exception(s"Unable to parse node dependency: '$s'")
+    }
+  }
+}
 
 case class NodeDeps(deps: Seq[NodeDep])
 
@@ -14,7 +21,7 @@ object NodeDeps {
       _.deps.map(d => d.name -> d.version).toMap,
       d =>
         NodeDeps(d.toSeq.map {
-          case (name, version) => NodeDep(name, version)
+          case (name, version) => NodeDep(name, version, false)
         })
     )
 }

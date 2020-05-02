@@ -1,10 +1,9 @@
 package iterativeworks.mill.webpack
 
 import org.scalatest.WordSpec
-import org.scalatest.Matchers
 import java.nio.file.Path
 
-class PackageJsonTest extends WordSpec with Matchers {
+class PackageJsonTest extends WordSpec {
   "Package json" should {
     "serialize into json file" in {
       val existingFile =
@@ -43,7 +42,8 @@ class PackageJsonTest extends WordSpec with Matchers {
           )
         )
       )
-      upickle.default.writeJs(example) should equal(existingFile)
+
+      assert(upickle.default.writeJs(example) === existingFile)
     }
   }
 }
