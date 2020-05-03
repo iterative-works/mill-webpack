@@ -1,5 +1,6 @@
 package iterativeworks.mill.webpack
 
+import mill._
 import upickle.default._
 
 case class NodeDep(name: String, version: String, typed: Boolean = false)
@@ -11,24 +12,33 @@ object NodeDep {
       case _                    => throw new Exception(s"Unable to parse node dependency: '$s'")
     }
   }
+
+  implicit def rw: ReadWriter[NodeDep] = upickle.default.macroRW
 }
 
 case class NodeDeps(deps: Seq[NodeDep])
 
-object NodeDeps {
-  implicit def rw: ReadWriter[NodeDeps] =
-    readwriter[Map[String, String]].bimap(
-      _.deps.map(d => d.name -> d.version).toMap,
-      d =>
-        NodeDeps(d.toSeq.map {
-          case (name, version) => NodeDep(name, version, false)
-        })
-    )
-}
-
-case class PackageJson(dependencies: NodeDeps, devDependencies: NodeDeps)
+case class PackageJson(
+    dependencies: Agg[NodeDep],
+    devDependencies: Agg[NodeDep]
+)
 
 object PackageJson {
+  implicit def rwDeps: ReadWriter[Agg[NodeDep]] =
+    readwriter[ujson.Obj].bimap(
+      deps =>
+        // Keep stable sort to not trigger changes accidentally
+        ujson.Obj.from(
+          deps.toSeq.sortBy(_.name).map(d => d.name -> ujson.Str(d.version))
+        ),
+      d =>
+        Agg.from(d.value.toSeq.map {
+          case (name, ujson.Str(version)) => NodeDep(name, version, false)
+          case dep @ _ =>
+            throw new Exception(s"Invalid dependencies field: $dep")
+        })
+    )
+
   implicit def rw: ReadWriter[PackageJson] =
     readwriter[ujson.Obj].bimap(
       pj =>
@@ -40,8 +50,8 @@ object PackageJson {
         ),
       json =>
         PackageJson(
-          read[NodeDeps](json("dependencies")),
-          read[NodeDeps](json("devDependencies"))
+          read[Agg[NodeDep]](json("dependencies")),
+          read[Agg[NodeDep]](json("devDependencies"))
         )
     )
 }
