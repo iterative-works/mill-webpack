@@ -24,6 +24,11 @@ import org.scalablytyped.converter.internal.ts.{
   TsIdentLibrary
 }
 import scala.collection.SortedMap
+import mill.scalalib.api.ZincWorkerApi
+import mill.scalalib.api.CompilationResult
+import scala.util.Try
+import mill.scalalib.Lib
+import mill.api.Result
 
 // TODO: make an external module object with Module trait as in Bloop.Module
 // We could compute all the node jars once, and keep node_modules only once
@@ -74,7 +79,7 @@ trait NodeModule extends ScalaJSModule {
   }
 
   def stUseScalaDom: T[Boolean] = T(false)
-  def stFlavour: T[Flavour] = T(Flavour.Normal)
+  def stFlavour: T[String] = T("normal")
   def stOutputPackage: T[String] = T("typings")
   def stStdlib: T[List[String]] = T(List("es6"))
   def stIgnore: T[Agg[String]] = T(Agg("typescript"))
@@ -87,11 +92,44 @@ trait NodeModule extends ScalaJSModule {
   // TODO: external module that would create all the typings for all the node modules and recall just by name?
   // TODO: list all the typings that will happen
   def nodeTypings: T[Agg[scalalib.Dep]] = {
+    def asDep(dep: Dep): scalalib.Dep =
+      dep match {
+        case Dep.Java(org, artifact, version) =>
+          scalalib.Dep(
+            org,
+            artifact,
+            version,
+            cross = scalalib.CrossVersion.empty(platformed = false)
+          )
+        case Dep.Scala(org, artifact, version) =>
+          scalalib.Dep(
+            org,
+            artifact,
+            version,
+            cross = scalalib.CrossVersion.Binary(platformed = false)
+          )
+        case Dep.ScalaJs(org, artifact, version) =>
+          scalalib.Dep(
+            org,
+            artifact,
+            version,
+            cross = scalalib.CrossVersion.Binary(platformed = true)
+          )
+        case Dep.ScalaFullVersion(org, artifact, version) =>
+          scalalib.Dep(
+            org,
+            artifact,
+            version,
+            cross = scalalib.CrossVersion.Full(platformed = false)
+          )
+      }
+
     def runTypings(
         folder: os.Path,
         destFolder: os.Path,
         conversion: ConversionOptions,
         wantedLibs: Agg[NodeDep],
+        compiler: build.Compiler,
         logger: Logger[Unit]
     ): Agg[scalalib.Dep] = {
       val fromNodeModules = Source
@@ -113,18 +151,6 @@ trait NodeModule extends ScalaJSModule {
         PersistingParser(parseCachePath, fromNodeModules.folders, logger.void)
 
       val flavour = flavourImpl.forConversion(conversion)
-
-      val compiler: build.Compiler = new build.Compiler {
-        def compile(
-            name: String,
-            digest: Digest,
-            compilerPaths: build.CompilerPaths,
-            deps: Set[build.Compiler.InternalDep],
-            externalDeps: Set[Dep]
-        ): Either[String, Unit] = {
-          Left("Not implemented")
-        }
-      }
 
       val Phases: RecPhase[Source, build.PublishedSbtProject] = RecPhase[Source]
         .next(
@@ -197,38 +223,6 @@ trait NodeModule extends ScalaJSModule {
           .reduceOption(_ ++ _)
           .getOrElse(Map.empty)
 
-      def asDep(dep: Dep): scalalib.Dep =
-        dep match {
-          case Dep.Java(org, artifact, version) =>
-            scalalib.Dep(
-              org,
-              artifact,
-              version,
-              cross = scalalib.CrossVersion.empty(platformed = false)
-            )
-          case Dep.Scala(org, artifact, version) =>
-            scalalib.Dep(
-              org,
-              artifact,
-              version,
-              cross = scalalib.CrossVersion.Binary(platformed = false)
-            )
-          case Dep.ScalaJs(org, artifact, version) =>
-            scalalib.Dep(
-              org,
-              artifact,
-              version,
-              cross = scalalib.CrossVersion.Binary(platformed = true)
-            )
-          case Dep.ScalaFullVersion(org, artifact, version) =>
-            scalalib.Dep(
-              org,
-              artifact,
-              version,
-              cross = scalalib.CrossVersion.Full(platformed = false)
-            )
-        }
-
       if (failures.nonEmpty) {
         val messages = failures.foldLeft(List.empty[String])((acc, failure) => {
           val (source, err) = failure
@@ -254,10 +248,15 @@ trait NodeModule extends ScalaJSModule {
       val logger: Logger[(Array[Logger.Stored], Unit)] =
         storing() zipWith stdout.filter(LogLevel.warn)
 
+      val versions = Versions(
+        Versions.Scala(scalaVersion()),
+        Versions.ScalaJs(scalaJSVersion())
+      )
+
       val conversion =
         ConversionOptions(
           useScalaJsDomTypes = stUseScalaDom(),
-          flavour = stFlavour(),
+          flavour = Flavour.all(stFlavour()),
           outputPackage = Name(stOutputPackage()),
           // TODO: make enableScalaJsDefined configurable
           enableScalaJsDefined = Selection.None,
@@ -266,20 +265,83 @@ trait NodeModule extends ScalaJSModule {
           expandTypeMappings = EnabledTypeMappingExpansion.DefaultSelection,
           ignoredLibs = stIgnore().map(TsIdentLibrary.apply).toSet,
           ignoredModulePrefixes = stIgnore().map(_.split("/").toList).toSet,
-          versions = Versions(
-            Versions.Scala(scalaVersion()),
-            Versions.ScalaJs(scalaJSVersion())
-          ),
+          versions = versions,
           organization = "org.scalablytyped"
         )
+
+      def mkCompiler(
+          worker: ZincWorkerApi,
+          compilerCp: Agg[os.Path],
+          scalacPluginCp: Agg[os.Path],
+          scalaLibDeps: Agg[scalalib.Dep],
+          scalaRuntimeDeps: Agg[scalalib.Dep],
+          psuffix: String
+      )(implicit ctx: ZincWorkerApi.Ctx): build.Compiler = new build.Compiler {
+        def compile(
+            name: String,
+            digest: Digest,
+            compilerPaths: build.CompilerPaths,
+            deps: Set[build.Compiler.InternalDep],
+            externalDeps: Set[Dep]
+        ): Either[String, Unit] = {
+          Lib.resolveDependencies(
+            repositories,
+            Lib.depToDependency(_, versions.scala.scalaVersion, psuffix),
+            Agg
+              .from(externalDeps.map(asDep)) ++ scalaLibDeps ++ scalaRuntimeDeps
+          ) match {
+            case Result.Success(edeps) =>
+              val dependencies = deps.map {
+                case build.Compiler.InternalDepClassFiles(_, path) => path
+                case build.Compiler.InternalDepJar(path)           => path
+              } ++ edeps.map(_.path)
+              Try {
+                worker.compileMixed(
+                  Seq.empty[CompilationResult],
+                  Agg.from(
+                    os.walk(compilerPaths.sourcesDir)
+                      .filter(_.last.endsWith(".scala"))
+                  ),
+                  dependencies,
+                  Seq.empty,
+                  versions.scala.scalaVersion,
+                  versions.scala.scalaOrganization,
+                  versions.scalacOptions,
+                  compilerCp,
+                  scalacPluginCp,
+                  None
+                )(
+                  new mill.api.Ctx.Dest with mill.api.Ctx.Log
+                  with mill.api.Ctx.Home {
+                    def dest = compilerPaths.classesDir / os.up
+                    def log = ctx.log
+                    def home = ctx.home
+                  }
+                )
+                ()
+              }.toEither.left.map(_.getMessage)
+            case _ => Left("Unable to fetch external dependencies.")
+          }
+        }
+      }
 
       runTypings(
         millSourcePath,
         T.ctx().dest,
         conversion,
         typedNodeDeps(),
+        mkCompiler(
+          zincWorker.worker(),
+          scalaCompilerClasspath().map(_.path),
+          super.scalacPluginClasspath().map(_.path),
+          scalaLibraryIvyDeps(),
+          Lib.scalaRuntimeIvyDeps(scalaOrganization(), scalaVersion()),
+          platformSuffix()
+        ),
         logger.void
       )
     }
   }
+
+  override def ivyDeps = super.ivyDeps() ++ nodeTypings()
 }
