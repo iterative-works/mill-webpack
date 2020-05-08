@@ -1,0 +1,37 @@
+= Mill Webpack Plugin =
+
+== Vision ==
+
+The goal of the mill-webpack plugin is to provide seamless environment to develop ScalaJS apps with mill build.
+
+The basic principles are:
+
+- simple setup, batteries included, working with minimal configuration
++
+To start, just extend WebpackModule and the module will generate the necessary webpack configuration. Add `npmDeps` and `npmDevDeps` to your liking, and the module will rebuild the configuration.
++
+- ability to use JS-native tools during development
++
+The generated files are part of your sources, as well as JS modules. You can run webpack and other tools just as you would with JS native builds.
++
+- stability and predictability of build process with CI tools
++
+The tool supports Yarn zero-install by including the JS dependencies and generated typings into version control. This way your build, CI build and build of any other team member stays the same.
++
+
+== Current State ==
+
+Work in progress, right now you can extend `NodeModule`, and define `nodeDeps` using `ts"package:version"` for typed dependencies (these are given to ScalablyTyped converter and added to dependencies) or `js"package:version"` - this are just added to `package.json`.
+
+On compilation, `package.json` is generated, `yarn` is used to install node packages and ScalablyTyped Converter is used to create the facades.
+
+Most of the code is currently just stolen either from sbt-converter or scalajs-bundler, for the proof of concept. Everything is currently done for each `NodeModule` (eg. own `node_modules` and `package.json`), just like scalajs-bundler is working.
+
+Webpack configuration is not yet created.
+
+== Next Steps ==
+
+- Create webpack tasks to generate the config, bundle the project and run the webpack dev server.
+- Add support for storybook modules.
+- Make the build more efficient by using common `node_modules` directory.
+- Add support for zero-install.
